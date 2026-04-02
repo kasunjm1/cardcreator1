@@ -1,0 +1,5 @@
+{
+  "name": "cardCreator",
+  "description": "A professional image editor to add custom text overlays with support for user-uploaded fonts and cloud saving.",
+  "requestFramePermissions": []
+}
