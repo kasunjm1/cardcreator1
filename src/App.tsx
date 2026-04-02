@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
-import { Upload, Type, Download, LogOut, Plus, Trash2, Settings, Image as ImageIcon, Type as FontIcon, Save, AlignLeft, AlignCenter, AlignRight, Calendar, UserCircle, Shield, Key, Users, ChevronDown, UserPlus, UserMinus, Edit2 } from "lucide-react";
+import { Upload, Type, Download, LogOut, Plus, Minus, Trash2, Settings, Image as ImageIcon, Type as FontIcon, Save, AlignLeft, AlignCenter, AlignRight, Calendar, UserCircle, Shield, Key, Users, ChevronDown, UserPlus, UserMinus, Edit2, Share2, MessageCircle, Menu, X } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -56,6 +56,7 @@ export default function App() {
   const [fonts, setFonts] = useState<Font[]>([]);
   const [isFontLoading, setIsFontLoading] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [isSaving, setIsSaving] = useState(false);
   const [newAccountUsername, setNewAccountUsername] = useState("");
   const [newAccountPassword, setNewAccountPassword] = useState("");
@@ -73,6 +74,8 @@ export default function App() {
   const [editingFont, setEditingFont] = useState<Font | null>(null);
   const [newFontName, setNewFontName] = useState("");
   const [userManagementPassword, setUserManagementPassword] = useState("");
+  const [showSidebar, setShowSidebar] = useState(false);
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isDraggingRef = useRef(false);
@@ -97,6 +100,26 @@ export default function App() {
       fetchProjects();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (image) {
+      const img = new Image();
+      img.src = image;
+      img.onload = () => {
+        const mainElement = document.querySelector('main');
+        if (mainElement) {
+          const padding = 64; // p-8 is 32px on each side
+          const maxWidth = mainElement.clientWidth - padding;
+          const maxHeight = mainElement.clientHeight - padding;
+          
+          const scaleX = maxWidth / img.width;
+          const newZoom = Math.min(scaleX, 1); // Fit to width, but don't exceed 100%
+          
+          setZoom(newZoom);
+        }
+      };
+    }
+  }, [image]);
 
   const fetchFonts = async () => {
     try {
@@ -354,7 +377,8 @@ export default function App() {
   const loadProject = (project: ImageProject) => {
     setCurrentProjectId(project.id);
     setImage(project.imageUrl);
-    setLayers(project.layers.map(l => ({ ...l, name: l.name || l.text })));
+    // Clear text contents when loading as requested
+    setLayers(project.layers.map(l => ({ ...l, text: "", name: l.name || l.text })));
     setSelectedLayerId(null);
   };
 
@@ -651,6 +675,7 @@ export default function App() {
     img.onload = () => {
       canvas.width = img.width;
       canvas.height = img.height;
+      setCanvasSize({ width: img.width, height: img.height });
       ctx.drawImage(img, 0, 0);
 
       layers.forEach((layer) => {
@@ -662,6 +687,9 @@ export default function App() {
         const x = (layer.x / 100) * canvas.width;
         const y = (layer.y / 100) * canvas.height;
 
+        // Show layer name when text content is empty
+        const displayText = layer.text || layer.name || "Text Layer";
+
         if (layer.shadowBlur > 0) {
           ctx.shadowBlur = layer.shadowBlur;
           ctx.shadowColor = layer.shadowColor;
@@ -670,11 +698,11 @@ export default function App() {
         if (layer.strokeWidth > 0) {
           ctx.strokeStyle = layer.strokeColor;
           ctx.lineWidth = layer.strokeWidth;
-          ctx.strokeText(layer.text, x, y);
+          ctx.strokeText(displayText, x, y);
         }
 
         ctx.fillStyle = layer.color;
-        ctx.fillText(layer.text, x, y);
+        ctx.fillText(displayText, x, y);
         ctx.restore();
       });
     };
@@ -702,8 +730,9 @@ export default function App() {
     if (!ctx) return null;
 
     return [...layers].reverse().find((layer) => {
+      const displayText = layer.text || layer.name || "Text Layer";
       ctx.font = `${layer.fontSize}px "${layer.fontFamily}"`;
-      const metrics = ctx.measureText(layer.text);
+      const metrics = ctx.measureText(displayText);
       const x = (layer.x / 100) * canvas.width;
       const y = (layer.y / 100) * canvas.height;
       
@@ -781,6 +810,37 @@ export default function App() {
     link.click();
   };
 
+  const shareImage = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    try {
+      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) return;
+      
+      const file = new File([blob], 'shared-image.png', { type: 'image/png' });
+      
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: 'Shared Image',
+          text: 'Check out this image I created!',
+        });
+      } else {
+        alert("Sharing is not supported on this browser. You can download the image instead.");
+      }
+    } catch (err) {
+      console.error("Error sharing image:", err);
+    }
+  };
+
+  const shareWhatsApp = () => {
+    const currentProject = projects.find(p => p.id === currentProjectId);
+    const text = `Check out this image: ${currentProject?.name || 'Image'}`;
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
+  };
+
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
@@ -842,18 +902,38 @@ export default function App() {
   return (
     <div className="h-screen bg-slate-950 text-slate-200 flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
+      <header className="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur-md sticky top-0 z-[100]">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
             <ImageIcon className="text-white w-5 h-5" />
           </div>
-          <span className="font-bold text-lg tracking-tight">FontOverlay Pro</span>
+          <span className="font-bold text-lg tracking-tight">Card Creator</span>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-1.5">
-            <button onClick={() => setZoom(Math.max(0.1, zoom - 0.1))} className="hover:text-blue-400">-</button>
-            <span className="text-xs font-mono w-12 text-center">{Math.round(zoom * 100)}%</span>
-            <button onClick={() => setZoom(Math.min(3, zoom + 0.1))} className="hover:text-blue-400">+</button>
+        <div className="flex items-center gap-2 md:gap-4">
+          <button 
+            onClick={() => setIsPreviewMode(!isPreviewMode)}
+            className={cn(
+              "p-2 rounded-lg transition-all",
+              isPreviewMode ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+            )}
+            title={isPreviewMode ? "Exit Preview" : "Enter Preview"}
+          >
+            <ImageIcon size={20} />
+          </button>
+          <button 
+            onClick={() => setShowSidebar(!showSidebar)}
+            className="md:hidden p-2 bg-slate-800 rounded-lg text-slate-300"
+          >
+            {showSidebar ? <X size={20} /> : <Menu size={20} />}
+          </button>
+          <div className="flex items-center gap-2 bg-slate-800 rounded-lg px-2 sm:px-3 py-1.5">
+            <button onClick={() => setZoom(Math.max(0.1, zoom - 0.1))} className="hover:text-blue-400 p-1">
+              <Minus size={14} />
+            </button>
+            <span className="text-[10px] sm:text-xs font-mono w-8 sm:w-12 text-center">{Math.round(zoom * 100)}%</span>
+            <button onClick={() => setZoom(Math.min(3, zoom + 0.1))} className="hover:text-blue-400 p-1">
+              <Plus size={14} />
+            </button>
           </div>
           
           <div className="relative">
@@ -869,12 +949,12 @@ export default function App() {
             <AnimatePresence>
               {showUserMenu && (
                 <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowUserMenu(false)} />
+                  <div className="fixed inset-0 z-[110]" onClick={() => setShowUserMenu(false)} />
                   <motion.div
                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl z-50 overflow-hidden"
+                    className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl z-[120] overflow-hidden"
                   >
                     <div className="p-3 border-b border-slate-800">
                       <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Account</p>
@@ -951,11 +1031,15 @@ export default function App() {
 
       <AnimatePresence>
         {showChangePasswordModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div 
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowChangePasswordModal(false)}
+          >
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
+              onClick={(e) => e.stopPropagation()}
               className="bg-slate-900 border border-slate-800 p-6 rounded-2xl w-full max-w-sm shadow-2xl"
             >
               <div className="flex items-center justify-between mb-6">
@@ -1010,11 +1094,15 @@ export default function App() {
         )}
 
         {showFontManagementModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div 
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowFontManagementModal(false)}
+          >
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
+              onClick={(e) => e.stopPropagation()}
               className="bg-slate-900 border border-slate-800 p-6 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
             >
               <div className="flex items-center justify-between mb-6 shrink-0">
@@ -1224,11 +1312,15 @@ export default function App() {
         )}
 
         {showUserManagementModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div 
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowUserManagementModal(false)}
+          >
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
+              onClick={(e) => e.stopPropagation()}
               className="bg-slate-900 border border-slate-800 p-6 rounded-2xl w-full max-w-2xl shadow-2xl max-h-[80vh] flex flex-col"
             >
               <div className="flex items-center justify-between mb-6">
@@ -1408,10 +1500,21 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
         {/* Sidebar Left - Layers & Controls */}
-        <aside className="w-80 border-r border-slate-800 bg-slate-900 flex flex-col overflow-hidden">
-          <div className="p-4 border-b border-slate-800 space-y-2 shrink-0">
+        <aside className={cn(
+          "fixed inset-y-0 left-0 z-[60] w-80 bg-slate-900 border-r border-slate-800 flex flex-col transition-transform duration-300 md:relative md:translate-x-0",
+          showSidebar ? "translate-x-0" : "-translate-x-full",
+          isPreviewMode && "md:-translate-x-full md:absolute"
+        )}>
+          {/* Mobile Close Button */}
+          <button 
+            onClick={() => setShowSidebar(false)}
+            className="md:hidden absolute top-4 right-4 p-2 text-slate-400 hover:text-white"
+          >
+            <X size={20} />
+          </button>
+          <div className="p-4 border-b border-slate-800 space-y-4 shrink-0">
             <div
               {...getSidebarRootProps()}
               className={cn(
@@ -1422,6 +1525,32 @@ export default function App() {
               <input {...getSidebarInputProps()} />
               <span className="text-slate-400">Upload New Image(s)</span>
             </div>
+
+            {image && (
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  onClick={downloadImage}
+                  className="flex flex-col items-center justify-center gap-1 p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition-all border border-slate-700"
+                >
+                  <Download size={16} />
+                  <span className="text-[10px] font-medium">Save</span>
+                </button>
+                <button
+                  onClick={shareImage}
+                  className="flex flex-col items-center justify-center gap-1 p-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-xl transition-all border border-blue-600/30"
+                >
+                  <Share2 size={16} />
+                  <span className="text-[10px] font-medium">Share</span>
+                </button>
+                <button
+                  onClick={shareWhatsApp}
+                  className="flex flex-col items-center justify-center gap-1 p-2 bg-green-600/20 hover:bg-green-600/30 text-green-400 rounded-xl transition-all border border-green-600/30"
+                >
+                  <MessageCircle size={16} />
+                  <span className="text-[10px] font-medium">WA</span>
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -1505,70 +1634,79 @@ export default function App() {
                   {layers.length === 0 ? (
                     <p className="text-sm text-slate-600 italic text-center py-4">No layers yet</p>
                   ) : (
-                    layers.map((layer) => (
-                      <div
-                        key={layer.id}
-                        onClick={() => setSelectedLayerId(layer.id)}
-                        className={cn(
-                          "group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border",
-                          selectedLayerId === layer.id
-                            ? "bg-blue-600/10 border-blue-600/50 text-blue-400"
-                            : "bg-slate-800/50 border-transparent hover:bg-slate-800 text-slate-400"
-                        )}
-                      >
-                        <div className="flex flex-col gap-1 overflow-hidden flex-1">
-                          <div className="flex items-center gap-2">
-                            <Type size={12} className="shrink-0 opacity-50" />
-                            <input
-                              type="text"
-                              value={layer.name}
-                              onChange={(e) => updateLayer(layer.id, { name: e.target.value })}
-                              onClick={(e) => e.stopPropagation()}
-                              placeholder="Layer Name"
-                              className="bg-transparent border-none outline-none text-[10px] font-bold uppercase tracking-wider w-full p-0 text-inherit placeholder:text-slate-600"
-                            />
-                          </div>
-                          <input
-                            type="text"
-                            value={layer.text}
-                            onChange={(e) => updateLayer(layer.id, { text: e.target.value })}
-                            onClick={(e) => e.stopPropagation()}
-                            placeholder="Content"
-                            className="bg-transparent border-none outline-none text-sm w-full p-0 text-inherit opacity-80 placeholder:text-slate-600"
-                          />
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {layer.type === 'date' && (
-                            <div className="relative group/date">
-                              <button
-                                className="p-1 hover:text-blue-400 transition-all opacity-0 group-hover:opacity-100"
-                              >
-                                <Calendar size={14} />
-                              </button>
+                    <AnimatePresence mode="popLayout">
+                      {layers.map((layer) => (
+                        <motion.div
+                          layout
+                          initial={{ opacity: 0, x: -20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          key={layer.id}
+                          onClick={() => {
+                            setSelectedLayerId(layer.id);
+                            if (window.innerWidth < 768) setShowSidebar(false);
+                          }}
+                          className={cn(
+                            "group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border",
+                            selectedLayerId === layer.id
+                              ? "bg-blue-600/10 border-blue-600/50 text-blue-400 ring-1 ring-blue-600/20"
+                              : "bg-slate-800/50 border-transparent hover:bg-slate-800 text-slate-400"
+                          )}
+                        >
+                          <div className="flex flex-col gap-1 overflow-hidden flex-1">
+                            <div className="flex items-center gap-2">
+                              <Type size={12} className="shrink-0 opacity-50" />
                               <input
-                                type="date"
-                                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                                type="text"
+                                value={layer.name}
+                                onChange={(e) => updateLayer(layer.id, { name: e.target.value })}
                                 onClick={(e) => e.stopPropagation()}
-                                onChange={(e) => {
-                                  if (e.target.value) {
-                                    updateLayer(layer.id, { text: e.target.value });
-                                  }
-                                }}
+                                placeholder="Layer Name"
+                                className="bg-transparent border-none outline-none text-[10px] font-bold uppercase tracking-wider w-full p-0 text-inherit placeholder:text-slate-600"
                               />
                             </div>
-                          )}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteLayer(layer.id);
-                            }}
-                            className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 transition-all"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    ))
+                            <input
+                              type="text"
+                              value={layer.text}
+                              onChange={(e) => updateLayer(layer.id, { text: e.target.value })}
+                              onClick={(e) => e.stopPropagation()}
+                              placeholder="Content"
+                              className="bg-transparent border-none outline-none text-sm w-full p-0 text-inherit opacity-80 placeholder:text-slate-600"
+                            />
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {layer.type === 'date' && (
+                              <div className="relative group/date">
+                                <button
+                                  className="p-1 hover:text-blue-400 transition-all opacity-0 group-hover:opacity-100"
+                                >
+                                  <Calendar size={14} />
+                                </button>
+                                <input
+                                  type="date"
+                                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => {
+                                    if (e.target.value) {
+                                      updateLayer(layer.id, { text: e.target.value });
+                                    }
+                                  }}
+                                />
+                              </div>
+                            )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteLayer(layer.id);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 transition-all"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
                   )}
                 </div>
               </div>
@@ -1759,41 +1897,117 @@ export default function App() {
       </aside>
 
         {/* Main Editor Area */}
-        <main className="flex-1 bg-slate-950 p-8 flex flex-col items-center justify-center relative overflow-auto">
+        <main className={cn(
+          "flex-1 bg-slate-950 relative overflow-auto custom-scrollbar flex flex-col transition-all duration-300",
+          isPreviewMode ? "p-0" : "p-4 sm:p-8"
+        )}>
+          {/* Mobile Sidebar Overlay */}
+          <AnimatePresence>
+            {showSidebar && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowSidebar(false)}
+                className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[55] md:hidden"
+              />
+            )}
+          </AnimatePresence>
+          {/* Mobile Quick Actions */}
+          {!isPreviewMode && image && (
+            <div className="md:hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-slate-900/90 backdrop-blur-md border border-slate-800 p-2 rounded-2xl shadow-2xl">
+              <button 
+                onClick={addLayer}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold"
+              >
+                <Plus size={16} /> Text
+              </button>
+              <button 
+                onClick={addDateLayer}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 rounded-xl text-xs font-bold"
+              >
+                <Calendar size={16} /> Date
+              </button>
+              <div className="w-px h-6 bg-slate-800 mx-1" />
+              <button 
+                onClick={shareImage}
+                className="p-2 text-blue-400"
+              >
+                <Share2 size={20} />
+              </button>
+              <button 
+                onClick={() => setShowSidebar(true)}
+                className="p-2 text-slate-400"
+              >
+                <Settings size={20} />
+              </button>
+            </div>
+          )}
           {!image ? (
-            <div
-              {...getMainRootProps()}
-              className={cn(
-                "w-full max-w-2xl aspect-video border-2 border-dashed rounded-3xl flex flex-col items-center justify-center transition-all cursor-pointer",
-                isMainDragActive ? "border-blue-500 bg-blue-500/5" : "border-slate-800 hover:border-slate-700 bg-slate-900/50"
-              )}
-            >
-              <input {...getMainInputProps()} />
-              <div className="w-16 h-16 bg-slate-800 rounded-2xl flex items-center justify-center mb-4">
-                <Upload className="text-slate-400" />
+            <div className="min-h-full w-full flex items-center justify-center p-8">
+              <div
+                {...getMainRootProps()}
+                className={cn(
+                  "w-full max-w-2xl aspect-video border-2 border-dashed rounded-3xl flex flex-col items-center justify-center transition-all cursor-pointer",
+                  isMainDragActive ? "border-blue-500 bg-blue-500/5" : "border-slate-800 hover:border-slate-700 bg-slate-900/50"
+                )}
+              >
+                <input {...getMainInputProps()} />
+                <div className="w-16 h-16 bg-slate-800 rounded-2xl flex items-center justify-center mb-4">
+                  <Upload className="text-slate-400" />
+                </div>
+                <h2 className="text-xl font-semibold text-white mb-2">Upload your image</h2>
+                <p className="text-slate-500 text-sm">Drag and drop or click to browse</p>
               </div>
-              <h2 className="text-xl font-semibold text-white mb-2">Upload your image</h2>
-              <p className="text-slate-500 text-sm">Drag and drop or click to browse</p>
             </div>
           ) : (
-            <div className="relative group" style={{ transform: `scale(${zoom})`, transition: 'transform 0.1s ease-out' }}>
-              <div className="max-w-full rounded-xl overflow-visible shadow-2xl border border-slate-800 bg-slate-900">
-                <canvas 
-                  ref={canvasRef} 
-                  className="max-w-full h-auto block cursor-default"
-                  onMouseDown={handleCanvasMouseDown}
-                  onMouseMove={handleCanvasMouseMove}
-                  onMouseUp={handleCanvasMouseUp}
-                  onMouseLeave={handleCanvasMouseUp}
-                />
-              </div>
-              <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
-                <button
-                  onClick={downloadImage}
-                  className="bg-slate-800 hover:bg-slate-700 text-white p-3 rounded-xl shadow-lg flex items-center gap-2 font-medium"
+            <div className="min-h-full min-w-full flex p-8">
+              <div 
+                className="relative group m-auto" 
+                style={{ 
+                  width: canvasSize.width * zoom, 
+                  height: canvasSize.height * zoom,
+                  transition: 'width 0.1s ease-out, height 0.1s ease-out' 
+                }}
+              >
+                <div 
+                  className="absolute inset-0 origin-top-left"
+                  style={{ transform: `scale(${zoom})`, transition: 'transform 0.1s ease-out' }}
                 >
-                  <Download size={20} />
-                </button>
+                  <div className="rounded-xl overflow-visible shadow-2xl border border-slate-800 bg-slate-900">
+                    <canvas 
+                      ref={canvasRef} 
+                      className="block cursor-default"
+                      onMouseDown={handleCanvasMouseDown}
+                      onMouseMove={handleCanvasMouseMove}
+                      onMouseUp={handleCanvasMouseUp}
+                      onMouseLeave={handleCanvasMouseUp}
+                    />
+                  </div>
+                </div>
+                <div className="absolute top-4 right-4 flex gap-2 z-50">
+                  <button
+                    onClick={shareWhatsApp}
+                    title="Share on WhatsApp"
+                    className="bg-green-600 hover:bg-green-500 text-white p-3 rounded-xl shadow-lg flex items-center gap-2 font-medium transition-all"
+                  >
+                    <MessageCircle size={20} />
+                  </button>
+                  <button
+                    onClick={shareImage}
+                    title="Share Image"
+                    className="bg-blue-600 hover:bg-blue-500 text-white p-3 rounded-xl shadow-lg flex items-center gap-2 font-medium transition-all"
+                  >
+                    <Share2 size={20} />
+                  </button>
+                  <button
+                    onClick={downloadImage}
+                    title="Download Image"
+                    className="bg-slate-800 hover:bg-slate-700 text-white p-3 rounded-xl shadow-lg flex items-center gap-2 font-medium transition-all"
+                  >
+                    <Download size={20} />
+                  </button>
+                </div>
               </div>
             </div>
           )}
