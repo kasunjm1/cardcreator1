@@ -6,6 +6,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import multer from "multer";
 import pg from "pg";
+import { createClient } from "@supabase/supabase-js";
 
 // Force bypass for self-signed certificates globally as a fallback
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -20,7 +21,14 @@ const FONTS_DIR = fs.existsSync(path.join(process.cwd(), "public", "fonts"))
   : fs.existsSync(path.join(process.cwd(), "api", "font"))
     ? path.join(process.cwd(), "api", "font")
     : path.join(process.cwd(), "font");
+const WRITABLE_FONTS_DIR = FONTS_DIR;
 const UPLOADS_DIR = path.join(__dirname, "public", "uploads");
+
+// Supabase setup
+const supabaseUrl = process.env.SUPABASE_URL || "";
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
+const supabase = (supabaseUrl && supabaseAnonKey) ? createClient(supabaseUrl, supabaseAnonKey) : null;
+const FONTS_BUCKET = "fonts";
 
 // Ensure directories exist
 [FONTS_DIR, UPLOADS_DIR].forEach(dir => {
@@ -30,11 +38,16 @@ const UPLOADS_DIR = path.join(__dirname, "public", "uploads");
 });
 
 // Database setup
-if (process.env.DATABASE_URL) {
-  const sanitizedUrl = process.env.DATABASE_URL.replace(/:[^:@/]+@/, ':****@');
-  console.log(`Database URL found: ${sanitizedUrl}`);
+const HAS_POSTGRES = !!process.env.DATABASE_URL;
+const HAS_SUPABASE = !!process.env.SUPABASE_URL && !!process.env.SUPABASE_ANON_KEY;
+
+if (HAS_POSTGRES) {
+  const sanitizedUrl = process.env.DATABASE_URL!.replace(/:[^:@/]+@/, ':****@');
+  console.log(`Postgres Database URL found: ${sanitizedUrl}`);
+} else if (HAS_SUPABASE) {
+  console.log("Supabase configured for database fallback");
 } else {
-  console.log("No DATABASE_URL found in environment");
+  console.log("No remote database configured, falling back to data.json");
 }
 
 const pool = new Pool({
@@ -55,73 +68,58 @@ if (!process.env.DATABASE_URL) {
 }
 
 async function initDb() {
-  console.log("Initializing database...");
-  let client;
-  try {
-    client = await pool.connect();
-    console.log("Database connected successfully.");
-  } catch (err) {
-    console.error("CRITICAL: Failed to connect to database:", err instanceof Error ? err.message : String(err));
-    return;
-  }
+  if (HAS_POSTGRES) {
+    console.log("Initializing Postgres database...");
+    let client;
+    try {
+      client = await pool.connect();
+      console.log("Database connected successfully.");
+      
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          username TEXT PRIMARY KEY,
+          password TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'user',
+          selected_fonts TEXT[] DEFAULT '{}'
+        );
+      `);
+      
+      await client.query(`
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_fonts TEXT[] DEFAULT '{}';
+      `);
 
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        username TEXT PRIMARY KEY,
-        password TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'user',
-        selected_fonts TEXT[] DEFAULT '{}'
-      );
-    `);
-    
-    // Ensure column exists if table was created before this version
-    await client.query(`
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_fonts TEXT[] DEFAULT '{}';
-    `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS font_app_images (
+          id TEXT PRIMARY KEY,
+          username TEXT NOT NULL,
+          image_url TEXT NOT NULL,
+          layers JSONB NOT NULL,
+          name TEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
 
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS font_app_images (
-        id TEXT PRIMARY KEY,
-        username TEXT NOT NULL,
-        image_url TEXT NOT NULL,
-        layers JSONB NOT NULL,
-        name TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    // Ensure column exists for images too
-    await client.query(`
-      ALTER TABLE font_app_images ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
-    `);
-    
-    const adminCheck = await client.query("SELECT * FROM users WHERE username = 'admin'");
-    if (adminCheck.rowCount === 0) {
-      await client.query("INSERT INTO users (username, password, role) VALUES ('admin', 'admin@1234', 'admin')");
-      console.log("Default admin user created.");
-    } else {
-      // Update password if it's the default one and needs changing
-      await client.query("UPDATE users SET password = 'admin@1234' WHERE username = 'admin' AND password = '1234'");
+      await client.query(`
+        ALTER TABLE font_app_images ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+      `);
+      
+      const adminCheck = await client.query("SELECT * FROM users WHERE username = 'admin'");
+      if (adminCheck.rowCount === 0) {
+        await client.query("INSERT INTO users (username, password, role) VALUES ('admin', 'admin@1234', 'admin')");
+        console.log("Default admin user created.");
+      }
+    } catch (err) {
+      console.error("Postgres initialization error:", err);
+    } finally {
+      if (client) client.release();
     }
-  } catch (err) {
-    console.error("Database initialization error:", err);
-  } finally {
-    client.release();
+  } else if (HAS_SUPABASE) {
+    console.log("Initializing Supabase database (checking tables)...");
+    // Tables assumed to exist or created via SQL editor
   }
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const isFont = file.fieldname === 'font';
-    cb(null, isFont ? FONTS_DIR : UPLOADS_DIR);
-  },
-  filename: (req, file, cb) => {
-    const sanitized = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
-    cb(null, Date.now() + "-" + sanitized);
-  }
-});
-
+const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 async function startServer() {
@@ -163,27 +161,47 @@ async function startServer() {
     try {
       const { username, password } = req.body;
       console.log(`Login attempt for user: ${username}`);
-      const result = await pool.query(
-        "SELECT username, role, selected_fonts as \"selectedFonts\" FROM users WHERE username = $1 AND password = $2",
-        [username, password]
-      );
       
-      if (result.rowCount && result.rowCount > 0) {
-        const user = result.rows[0];
-        console.log(`Login successful for user: ${username}`);
-        res.json({ 
-          success: true, 
-          username: user.username, 
-          role: user.role,
-          selectedFonts: user.selectedFonts || []
-        });
-      } else {
-        console.log(`Login failed for user: ${username} - Invalid credentials`);
-        res.status(401).json({ success: false, message: "Invalid credentials" });
+      if (HAS_POSTGRES) {
+        const result = await pool.query(
+          "SELECT username, role, selected_fonts as \"selectedFonts\" FROM users WHERE username = $1 AND password = $2",
+          [username, password]
+        );
+        
+        if (result.rowCount && result.rowCount > 0) {
+          const user = result.rows[0];
+          console.log(`Login successful for user: ${username}`);
+          return res.json({ 
+            success: true, 
+            username: user.username, 
+            role: user.role,
+            selectedFonts: user.selectedFonts || []
+          });
+        }
+      } else if (HAS_SUPABASE) {
+        const { data, error } = await supabase
+          .from('users')
+          .select('username, role, selected_fonts')
+          .eq('username', username)
+          .eq('password', password)
+          .single();
+        
+        if (data) {
+          console.log(`Login successful for user: ${username} (Supabase)`);
+          return res.json({ 
+            success: true, 
+            username: data.username, 
+            role: data.role,
+            selectedFonts: data.selected_fonts || []
+          });
+        }
       }
+      
+      console.log(`Login failed for user: ${username} - Invalid credentials`);
+      res.status(401).json({ success: false, message: "Invalid credentials" });
     } catch (err) {
       console.error("Login error details:", err instanceof Error ? err.message : String(err));
-      res.status(500).json({ success: false, message: "Internal server error: Database query failed" });
+      res.status(500).json({ success: false, message: "Internal server error" });
     }
   });
 
@@ -308,29 +326,72 @@ async function startServer() {
   });
 
   // Fonts
-  app.get("/api/fonts", (req, res) => {
+  app.get("/api/fonts", async (req, res) => {
     try {
-      const files = fs.readdirSync(FONTS_DIR);
-      res.json(files.map(f => ({ name: f, url: `/fonts/${f}` })));
+      const projectFiles = fs.existsSync(FONTS_DIR) ? fs.readdirSync(FONTS_DIR) : [];
+      const projectFonts = projectFiles.map(f => ({ name: f, url: `/fonts/${f}` }));
+
+      let supabaseFonts: any[] = [];
+      if (supabase) {
+        const { data, error } = await supabase.storage.from(FONTS_BUCKET).list();
+        if (data) {
+          supabaseFonts = data.map((f: any) => {
+            const { data: { publicUrl } } = supabase.storage.from(FONTS_BUCKET).getPublicUrl(f.name);
+            return { name: f.name, url: publicUrl };
+          });
+        }
+      }
+
+      const allFonts = [...projectFonts, ...supabaseFonts];
+      const uniqueFonts = Array.from(new Map(allFonts.map(f => [f.name, f])).values());
+      res.json(uniqueFonts);
     } catch (err) {
       console.error("Fetch fonts error details:", err instanceof Error ? err.message : String(err));
-      res.status(500).json({ success: false, message: "Internal server error: Font retrieval failed" });
+      res.status(500).json({ success: false, message: "Internal server error" });
     }
   });
 
-  app.post("/api/upload-font", (req, res, next) => {
-    upload.single("font")(req, res, (err) => {
-      if (err) {
-        console.error("Font upload error:", err);
-        return res.status(500).json({ success: false, message: err.message });
+  app.post("/api/upload-font", upload.single("font"), async (req, res) => {
+    try {
+      const file = req.file;
+      if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+      if (supabase) {
+        const sanitized = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
+        const fileName = `${Date.now()}-${sanitized}`;
+        const { data, error } = await supabase.storage.from(FONTS_BUCKET).upload(fileName, file.buffer, {
+          contentType: file.mimetype,
+          upsert: true
+        });
+        if (error) throw error;
+        const { data: { publicUrl } } = supabase.storage.from(FONTS_BUCKET).getPublicUrl(fileName);
+        return res.json({ success: true, url: publicUrl, name: fileName });
       }
-      res.json({ success: true, file: (req as any).file });
-    });
+
+      // Fallback to disk if no Supabase
+      const sanitized = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
+      const fileName = `${Date.now()}-${sanitized}`;
+      fs.writeFileSync(path.join(FONTS_DIR, fileName), file.buffer);
+      res.json({ success: true, url: `/fonts/${fileName}`, name: fileName });
+    } catch (err) {
+      console.error("Font upload error:", err);
+      res.status(500).json({ success: false, message: "Internal server error" });
+    }
   });
 
-  app.delete("/api/fonts/:name", (req, res) => {
+  app.delete("/api/fonts/:name", async (req, res) => {
     try {
       const { name } = req.params;
+      
+      if (supabase) {
+        const { data: files } = await supabase.storage.from(FONTS_BUCKET).list();
+        const fileToDelete = files?.find((f: any) => f.name === name || f.name.startsWith(name));
+        if (fileToDelete) {
+          await supabase.storage.from(FONTS_BUCKET).remove([fileToDelete.name]);
+          return res.json({ success: true });
+        }
+      }
+
       const files = fs.readdirSync(FONTS_DIR);
       const fileToDelete = files.find(f => {
         const fontFamily = f.split('.').slice(0, -1).join('.');
@@ -349,9 +410,25 @@ async function startServer() {
     }
   });
 
-  app.post("/api/fonts/rename", (req, res) => {
+  app.post("/api/fonts/rename", async (req, res) => {
     try {
       const { oldName, newName } = req.body;
+
+      if (supabase) {
+        const { data: files } = await supabase.storage.from(FONTS_BUCKET).list();
+        const fileToRename = files?.find((f: any) => f.name === oldName || f.name.startsWith(oldName));
+        if (fileToRename) {
+          const ext = path.extname(fileToRename.name);
+          const timestamp = fileToRename.name.split('-')[0];
+          const newFileName = `${timestamp}-${newName}${ext}`;
+          const { error } = await supabase.storage.from(FONTS_BUCKET).copy(fileToRename.name, newFileName);
+          if (!error) {
+            await supabase.storage.from(FONTS_BUCKET).remove([fileToRename.name]);
+            return res.json({ success: true });
+          }
+        }
+      }
+
       const files = fs.readdirSync(FONTS_DIR);
       const fileToRename = files.find(f => {
         const fontFamily = f.split('.').slice(0, -1).join('.');
@@ -377,19 +454,31 @@ async function startServer() {
   app.get("/api/images", async (req, res) => {
     try {
       const { username } = req.query;
-      let query = "SELECT id, username, image_url as \"imageUrl\", layers, name, created_at as \"createdAt\" FROM font_app_images";
-      const params = [];
       
-      if (username) {
-        query += " WHERE username = $1";
-        params.push(username);
+      if (HAS_POSTGRES) {
+        let query = "SELECT id, username, image_url as \"imageUrl\", layers, name, created_at as \"createdAt\" FROM font_app_images";
+        const params = [];
+        if (username) {
+          query += " WHERE username = $1";
+          params.push(username);
+        }
+        const result = await pool.query(query, params);
+        return res.json(result.rows);
+      } else if (supabase) {
+        let query = supabase.from('font_app_images').select('id, username, image_url, layers, name, created_at');
+        if (username) query = query.eq('username', username);
+        const { data, error } = await query;
+        if (error) throw error;
+        return res.json(data.map((img: any) => ({
+          ...img,
+          imageUrl: img.image_url,
+          createdAt: img.created_at
+        })));
       }
-      
-      const result = await pool.query(query, params);
-      res.json(result.rows);
+      res.json([]);
     } catch (err) {
       console.error("Fetch images error details:", err instanceof Error ? err.message : String(err));
-      res.status(500).json({ success: false, message: "Internal server error: Image retrieval failed" });
+      res.status(500).json({ success: false, message: "Internal server error" });
     }
   });
 
@@ -397,32 +486,44 @@ async function startServer() {
     try {
       const { id, username, imageUrl, layers, name } = req.body;
       
-      await pool.query(
-        `INSERT INTO font_app_images (id, username, image_url, layers, name)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO UPDATE SET
-         username = EXCLUDED.username,
-         image_url = EXCLUDED.image_url,
-         layers = EXCLUDED.layers,
-         name = EXCLUDED.name`,
-        [id, username, imageUrl, JSON.stringify(layers), name]
-      );
+      if (HAS_POSTGRES) {
+        await pool.query(
+          `INSERT INTO font_app_images (id, username, image_url, layers, name)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (id) DO UPDATE SET
+           username = EXCLUDED.username,
+           image_url = EXCLUDED.image_url,
+           layers = EXCLUDED.layers,
+           name = EXCLUDED.name`,
+          [id, username, imageUrl, JSON.stringify(layers), name]
+        );
+      } else if (supabase) {
+        const { error } = await supabase
+          .from('font_app_images')
+          .upsert({ id, username, image_url: imageUrl, layers, name });
+        if (error) throw error;
+      }
       
       res.json({ success: true });
     } catch (err) {
       console.error("Save image error details:", err instanceof Error ? err.message : String(err));
-      res.status(500).json({ success: false, message: "Internal server error: Image save failed" });
+      res.status(500).json({ success: false, message: "Internal server error" });
     }
   });
 
   app.delete("/api/images/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      await pool.query("DELETE FROM font_app_images WHERE id = $1", [id]);
+      if (HAS_POSTGRES) {
+        await pool.query("DELETE FROM font_app_images WHERE id = $1", [id]);
+      } else if (supabase) {
+        const { error } = await supabase.from('font_app_images').delete().eq('id', id);
+        if (error) throw error;
+      }
       res.json({ success: true });
     } catch (err) {
       console.error("Delete image error details:", err instanceof Error ? err.message : String(err));
-      res.status(500).json({ success: false, message: "Internal server error: Image deletion failed" });
+      res.status(500).json({ success: false, message: "Internal server error" });
     }
   });
 
