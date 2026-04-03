@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
-import { Upload, Type, Download, LogOut, Plus, Minus, Trash2, Settings, Image as ImageIcon, Type as FontIcon, Save, AlignLeft, AlignCenter, AlignRight, Calendar, UserCircle, Shield, Key, Users, ChevronDown, UserPlus, UserMinus, Edit2, Share2, MessageCircle, Menu, X } from "lucide-react";
+import { Upload, Type, Download, LogOut, Plus, Minus, Trash2, Settings, Image as ImageIcon, Type as FontIcon, Save, AlignLeft, AlignCenter, AlignRight, Bold, Italic, Underline, Calendar, UserCircle, Shield, Key, Users, ChevronDown, UserPlus, UserMinus, Edit2, Share2, MessageCircle, Menu, X } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -30,6 +30,9 @@ interface TextLayer {
   shadowColor: string;
   textAlign: 'left' | 'center' | 'right';
   type?: 'text' | 'date';
+  isBold?: boolean;
+  isItalic?: boolean;
+  isUnderline?: boolean;
 }
 
 interface ImageProject {
@@ -624,6 +627,9 @@ export default function App() {
       shadowColor: "#000000",
       textAlign: 'left',
       type: 'text',
+      isBold: false,
+      isItalic: false,
+      isUnderline: false,
     };
     setLayers([...layers, newLayer]);
     setSelectedLayerId(newLayer.id);
@@ -646,6 +652,9 @@ export default function App() {
       shadowColor: "#000000",
       textAlign: 'left',
       type: 'date',
+      isBold: false,
+      isItalic: false,
+      isUnderline: false,
     };
     setLayers([...layers, newLayer]);
     setSelectedLayerId(newLayer.id);
@@ -677,7 +686,9 @@ export default function App() {
 
       layers.forEach((layer) => {
         ctx.save();
-        ctx.font = `${layer.fontSize}px "${layer.fontFamily}"`;
+        const fontStyle = layer.isItalic ? "italic " : "";
+        const fontWeight = layer.isBold ? "bold " : "";
+        ctx.font = `${fontStyle}${fontWeight}${layer.fontSize}px "${layer.fontFamily}"`;
         ctx.textAlign = layer.textAlign || "center";
         ctx.textBaseline = "middle";
         
@@ -700,6 +711,22 @@ export default function App() {
 
         ctx.fillStyle = layer.color;
         ctx.fillText(displayText, x, y);
+
+        if (layer.isUnderline) {
+          const metrics = ctx.measureText(displayText);
+          const width = metrics.width;
+          const height = layer.fontSize;
+          let underlineX = x;
+          if (ctx.textAlign === 'center') underlineX = x - width / 2;
+          if (ctx.textAlign === 'right') underlineX = x - width;
+          
+          ctx.beginPath();
+          ctx.strokeStyle = layer.color;
+          ctx.lineWidth = Math.max(1, layer.fontSize / 15);
+          ctx.moveTo(underlineX, y + height / 2);
+          ctx.lineTo(underlineX + width, y + height / 2);
+          ctx.stroke();
+        }
         ctx.restore();
       });
     };
@@ -1814,6 +1841,48 @@ export default function App() {
                         onChange={(e) => updateLayer(selectedLayer.id, { color: e.target.value })}
                         className="w-full h-9 bg-slate-800 border border-slate-700 rounded-lg px-1 py-1 outline-none cursor-pointer"
                       />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1.5">Font Style</label>
+                    <div className="flex bg-slate-800 border border-slate-700 rounded-lg p-1 gap-1">
+                      <button
+                        onClick={() => updateLayer(selectedLayer.id, { isBold: !selectedLayer.isBold })}
+                        className={cn(
+                          "flex-1 py-1.5 rounded-md flex items-center justify-center transition-all",
+                          selectedLayer.isBold 
+                            ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20" 
+                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-700"
+                        )}
+                        title="Bold"
+                      >
+                        <Bold size={16} />
+                      </button>
+                      <button
+                        onClick={() => updateLayer(selectedLayer.id, { isItalic: !selectedLayer.isItalic })}
+                        className={cn(
+                          "flex-1 py-1.5 rounded-md flex items-center justify-center transition-all",
+                          selectedLayer.isItalic 
+                            ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20" 
+                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-700"
+                        )}
+                        title="Italic"
+                      >
+                        <Italic size={16} />
+                      </button>
+                      <button
+                        onClick={() => updateLayer(selectedLayer.id, { isUnderline: !selectedLayer.isUnderline })}
+                        className={cn(
+                          "flex-1 py-1.5 rounded-md flex items-center justify-center transition-all",
+                          selectedLayer.isUnderline 
+                            ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20" 
+                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-700"
+                        )}
+                        title="Underline"
+                      >
+                        <Underline size={16} />
+                      </button>
                     </div>
                   </div>
 
