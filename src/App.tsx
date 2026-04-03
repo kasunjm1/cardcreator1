@@ -49,7 +49,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const [projects, setProjects] = useState<ImageProject[]>([]);
-  const [uploadedImages, setUploadedImages] = useState<{ name: string; url: string }[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [image, setImage] = useState<string | null>(null);
   const [layers, setLayers] = useState<TextLayer[]>([]);
@@ -83,20 +82,6 @@ export default function App() {
   const dragStartPos = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
-    const savedUser = localStorage.getItem("card_creator_user");
-    if (savedUser) {
-      try {
-        setUser(JSON.parse(savedUser));
-      } catch (e) {
-        console.error("Failed to parse saved user", e);
-      }
-    }
-    
-    const savedProjectId = localStorage.getItem("card_creator_project_id");
-    if (savedProjectId) {
-      setCurrentProjectId(savedProjectId);
-    }
-
     const checkHealth = async () => {
       try {
         const res = await fetch("/api/health");
@@ -111,22 +96,10 @@ export default function App() {
 
   useEffect(() => {
     if (user) {
-      localStorage.setItem("card_creator_user", JSON.stringify(user));
       fetchFonts();
       fetchProjects();
-      fetchUploadedImages();
-    } else {
-      localStorage.removeItem("card_creator_user");
     }
   }, [user]);
-
-  useEffect(() => {
-    if (currentProjectId) {
-      localStorage.setItem("card_creator_project_id", currentProjectId);
-    } else {
-      localStorage.removeItem("card_creator_project_id");
-    }
-  }, [currentProjectId]);
 
   useEffect(() => {
     if (image) {
@@ -183,31 +156,17 @@ export default function App() {
       const data = await res.json();
       setProjects(data);
       
-      // Auto-select the last edited project if none selected
-      const savedProjectId = localStorage.getItem("card_creator_project_id");
-      if (data.length > 0 && !currentProjectId && !savedProjectId) {
+      // Auto-select the last edited project
+      if (data.length > 0 && !currentProjectId) {
         const lastProject = [...data].sort((a, b) => {
           const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
           const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
           return timeB - timeA;
         })[0];
         if (lastProject) loadProject(lastProject);
-      } else if (savedProjectId && !currentProjectId) {
-        const savedProject = data.find((p: any) => p.id === savedProjectId);
-        if (savedProject) loadProject(savedProject);
       }
     } catch (err) {
       console.error("Failed to fetch projects", err);
-    }
-  };
-
-  const fetchUploadedImages = async () => {
-    try {
-      const res = await fetch("/api/all-uploads");
-      const data = await res.json();
-      setUploadedImages(data);
-    } catch (err) {
-      console.error("Failed to fetch uploaded images", err);
     }
   };
 
@@ -418,8 +377,8 @@ export default function App() {
   const loadProject = (project: ImageProject) => {
     setCurrentProjectId(project.id);
     setImage(project.imageUrl);
-    // Keep text contents when loading
-    setLayers(project.layers.map(l => ({ ...l, name: l.name || l.text })));
+    // Clear text contents when loading as requested
+    setLayers(project.layers.map(l => ({ ...l, text: "", name: l.name || l.text })));
     setSelectedLayerId(null);
   };
 
@@ -491,7 +450,6 @@ export default function App() {
             setSelectedLayerId(null);
             // We update projects state locally to avoid the race condition with auto-save
             setProjects(prev => [project, ...prev]);
-            fetchUploadedImages();
           }
         } else {
           throw new Error(`Upload failed for ${file.name}: ${data.message || 'Unknown error'}`);
@@ -949,7 +907,7 @@ export default function App() {
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
             <ImageIcon className="text-white w-5 h-5" />
           </div>
-          <span className="font-bold text-lg tracking-tight">Card Creator</span>
+          <span className="font-bold text-lg tracking-tight">My Card Creator</span>
         </div>
         <div className="flex items-center gap-2 md:gap-4">
           <button 
@@ -1056,14 +1014,7 @@ export default function App() {
                     
                     <div className="p-1 border-t border-slate-800">
                       <button 
-                        onClick={() => {
-                          setUser(null);
-                          setCurrentProjectId(null);
-                          setImage(null);
-                          setLayers([]);
-                          localStorage.removeItem("card_creator_user");
-                          localStorage.removeItem("card_creator_project_id");
-                        }}
+                        onClick={() => setUser(null)}
                         className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-red-400/10 rounded-lg transition-colors"
                       >
                         <LogOut size={16} />
@@ -1652,39 +1603,6 @@ export default function App() {
                             className="w-full bg-transparent text-[10px] text-white outline-none border-none p-0 text-center font-medium"
                           />
                         </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Gallery Section */}
-            <div className="border-b border-slate-800">
-              <div className="p-4 pb-2">
-                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Uploaded Images</h3>
-              </div>
-              <div className="p-4 pt-0">
-                <div className="grid grid-cols-3 gap-2">
-                  {uploadedImages.length === 0 ? (
-                    <p className="text-[10px] text-slate-600 italic col-span-3 text-center py-4">No uploads yet</p>
-                  ) : (
-                    uploadedImages.map((img, idx) => (
-                      <div
-                        key={`${img.name}-${idx}`}
-                        onClick={() => {
-                          setImage(img.url);
-                          // If we are in a project, it will auto-save with the new image
-                          // If not, we might want to create one? 
-                          // For now, just setting the image is enough as auto-save will trigger if logged in
-                        }}
-                        className={cn(
-                          "relative aspect-square rounded-lg overflow-hidden cursor-pointer border-2 transition-all hover:border-blue-500",
-                          image === img.url ? "border-blue-500" : "border-transparent"
-                        )}
-                        title={img.name}
-                      >
-                        <img src={img.url} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       </div>
                     ))
                   )}
