@@ -20,22 +20,30 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? {
     rejectUnauthorized: false
-  } : false
+  } : undefined
 });
+
+let isDbInitialized = false;
+let dbInitError: string | null = null;
 
 // Ensure directories exist
 [FONTS_DIR, UPLOADS_DIR].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch (e) {
+    console.error(`Failed to create directory ${dir}:`, e);
   }
 });
 
 // Initialize database tables if using DB
 async function initDb() {
-  if (!process.env.DATABASE_URL) return;
+  if (isDbInitialized || !process.env.DATABASE_URL) return;
   
   let client;
   try {
+    console.log("Initializing database...");
     client = await pool.connect();
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -69,7 +77,11 @@ async function initDb() {
     if (adminCheck.rowCount === 0) {
       await client.query("INSERT INTO users (username, password, role) VALUES ('admin', 'admin@1234', 'admin')");
     }
+    isDbInitialized = true;
+    dbInitError = null;
+    console.log("Database initialized successfully.");
   } catch (err) {
+    dbInitError = err instanceof Error ? err.message : String(err);
     console.error("Database initialization error:", err);
   } finally {
     if (client) client.release();
@@ -114,19 +126,27 @@ app.use(express.json());
 // Health check
 app.get("/api/health", async (req, res) => {
   let dbStatus = "not_configured";
+  let dbError = null;
   if (process.env.DATABASE_URL) {
     try {
       await pool.query("SELECT 1");
       dbStatus = "connected";
     } catch (err) {
-      dbStatus = "error: " + (err instanceof Error ? err.message : String(err));
+      dbStatus = "error";
+      dbError = err instanceof Error ? err.message : String(err);
     }
   }
   res.json({ 
     status: "ok", 
     time: new Date().toISOString(), 
     environment: IS_VERCEL ? "vercel" : "local",
-    database: dbStatus
+    database: {
+      status: dbStatus,
+      error: dbError,
+      initError: dbInitError,
+      isInitialized: isDbInitialized,
+      hasUrl: !!process.env.DATABASE_URL
+    }
   });
 });
 
@@ -142,6 +162,9 @@ app.post("/api/login", async (req, res) => {
     if (process.env.DATABASE_URL) {
       console.log("Using database for login");
       await initDb();
+      if (dbInitError) {
+        throw new Error(`Database init failed: ${dbInitError}`);
+      }
       const result = await pool.query(
         "SELECT username, role, selected_fonts as \"selectedFonts\" FROM users WHERE username = $1 AND password = $2",
         [username, password]
@@ -161,6 +184,9 @@ app.post("/api/login", async (req, res) => {
       }
     } else {
       console.log("Using data.json for login");
+      if (!fs.existsSync(DATA_FILE)) {
+        throw new Error(`Data file not found at ${DATA_FILE}`);
+      }
       const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
       const user = data.users.find((u: any) => u.username === username && u.password === password);
       if (user) {
@@ -179,7 +205,11 @@ app.post("/api/login", async (req, res) => {
     res.status(401).json({ success: false, message: "Invalid credentials" });
   } catch (err) {
     console.error("Login error:", err);
-    res.status(500).json({ success: false, message: "Internal server error" });
+    res.status(500).json({ 
+      success: false, 
+      message: "Internal server error",
+      details: err instanceof Error ? err.message : String(err)
+    });
   }
 });
 
