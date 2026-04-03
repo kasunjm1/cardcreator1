@@ -333,9 +333,7 @@ async function startServer() {
       const { name } = req.params;
       const files = fs.readdirSync(FONTS_DIR);
       const fileToDelete = files.find(f => {
-        const parts = f.split('-');
-        const nameWithExt = parts.length > 1 ? parts.slice(1).join('-') : f;
-        const fontFamily = nameWithExt.split('.').slice(0, -1).join('.');
+        const fontFamily = f.split('.').slice(0, -1).join('.');
         return fontFamily === name || f === name;
       });
 
@@ -356,9 +354,7 @@ async function startServer() {
       const { oldName, newName } = req.body;
       const files = fs.readdirSync(FONTS_DIR);
       const fileToRename = files.find(f => {
-        const parts = f.split('-');
-        const nameWithExt = parts.length > 1 ? parts.slice(1).join('-') : f;
-        const fontFamily = nameWithExt.split('.').slice(0, -1).join('.');
+        const fontFamily = f.split('.').slice(0, -1).join('.');
         return fontFamily === oldName || f === oldName;
       });
 

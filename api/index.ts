@@ -506,9 +506,7 @@ app.delete("/api/fonts/:name", (req, res) => {
     
     // Check writable files first as they are more likely to be deleted
     let fileToDelete = writableFiles.find(f => {
-      const parts = f.split('-');
-      const nameWithExt = parts.length > 1 ? parts.slice(1).join('-') : f;
-      const fontFamily = nameWithExt.split('.').slice(0, -1).join('.');
+      const fontFamily = f.split('.').slice(0, -1).join('.');
       return fontFamily === name || f === name;
     });
 
@@ -519,9 +517,7 @@ app.delete("/api/fonts/:name", (req, res) => {
 
     // Check project files (might fail if read-only)
     fileToDelete = projectFiles.find(f => {
-      const parts = f.split('-');
-      const nameWithExt = parts.length > 1 ? parts.slice(1).join('-') : f;
-      const fontFamily = nameWithExt.split('.').slice(0, -1).join('.');
+      const fontFamily = f.split('.').slice(0, -1).join('.');
       return fontFamily === name || f === name;
     });
 
@@ -544,9 +540,7 @@ app.post("/api/fonts/rename", (req, res) => {
     const writableFiles = fs.existsSync(WRITABLE_FONTS_DIR) ? fs.readdirSync(WRITABLE_FONTS_DIR) : [];
     
     let fileToRename = writableFiles.find(f => {
-      const parts = f.split('-');
-      const nameWithExt = parts.length > 1 ? parts.slice(1).join('-') : f;
-      const fontFamily = nameWithExt.split('.').slice(0, -1).join('.');
+      const fontFamily = f.split('.').slice(0, -1).join('.');
       return fontFamily === oldName || f === oldName;
     });
 
@@ -559,9 +553,7 @@ app.post("/api/fonts/rename", (req, res) => {
     }
 
     fileToRename = projectFiles.find(f => {
-      const parts = f.split('-');
-      const nameWithExt = parts.length > 1 ? parts.slice(1).join('-') : f;
-      const fontFamily = nameWithExt.split('.').slice(0, -1).join('.');
+      const fontFamily = f.split('.').slice(0, -1).join('.');
       return fontFamily === oldName || f === oldName;
     });
 

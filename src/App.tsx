@@ -136,24 +136,25 @@ export default function App() {
       console.log(`API returned ${data.length} fonts:`, data);
       
       const loadedFonts = await Promise.all(data.map(async (font: Font) => {
-        // Clean font name: remove timestamp prefix and extension
-        const parts = font.name.split('-');
-        const nameWithExt = parts.length > 1 ? parts.slice(1).join('-') : font.name;
-        const fontFamily = nameWithExt.split('.').slice(0, -1).join('.');
+        // Use full filename (minus extension) as fontFamily to ensure uniqueness
+        const fontFamily = font.name.split('.').slice(0, -1).join('.');
         
-        console.log(`Loading font: ${fontFamily} from ${font.url}`);
-        if (document.fonts.check(`12px "${fontFamily}"`)) {
-          console.log(`Font ${fontFamily} already loaded`);
+        console.log(`Loading font: "${fontFamily}" from ${font.url}`);
+        
+        // Check if already loaded
+        if (Array.from(document.fonts.values()).some(face => face.family === fontFamily)) {
+          console.log(`Font "${fontFamily}" already in document.fonts`);
           return { name: fontFamily, url: font.url };
         }
-        const fontFace = new FontFace(fontFamily, `url("${encodeURI(font.url)}")`);
+
         try {
+          const fontFace = new FontFace(fontFamily, `url("${encodeURI(font.url)}")`);
           const loadedFace = await fontFace.load();
           document.fonts.add(loadedFace);
-          console.log(`Successfully loaded font: ${fontFamily}`);
+          console.log(`Successfully loaded font: "${fontFamily}"`);
           return { name: fontFamily, url: font.url };
         } catch (e) {
-          console.error(`Failed to load font: ${font.name} (${fontFamily}) from ${font.url}`, e);
+          console.error(`Failed to load font: "${fontFamily}" from ${font.url}`, e);
           return null;
         }
       }));
@@ -529,8 +530,9 @@ export default function App() {
   };
 
   const renameFont = async (oldName: string) => {
-    const newName = prompt("Enter new name for the font:", oldName);
-    if (!newName || newName === oldName) return;
+    const cleanName = oldName.split('-').slice(1).join('-') || oldName;
+    const newName = prompt("Enter new name for the font:", cleanName);
+    if (!newName || newName === cleanName) return;
     try {
       const res = await fetch("/api/fonts/rename", {
         method: "POST",
@@ -686,17 +688,29 @@ export default function App() {
 
     const img = new Image();
     img.src = image;
-    img.onload = () => {
+    img.onload = async () => {
       canvas.width = img.width;
       canvas.height = img.height;
       setCanvasSize({ width: img.width, height: img.height });
       ctx.drawImage(img, 0, 0);
 
-      layers.forEach((layer) => {
+      for (const layer of layers) {
         ctx.save();
         const fontStyle = layer.isItalic ? "italic " : "";
         const fontWeight = layer.isBold ? "bold " : "";
-        ctx.font = `${fontStyle}${fontWeight}${layer.fontSize}px "${layer.fontFamily}"`;
+        const fontStr = `${fontStyle}${fontWeight}${layer.fontSize}px "${layer.fontFamily}"`;
+        
+        // Ensure font is loaded before drawing
+        try {
+          if (!document.fonts.check(fontStr)) {
+            console.log(`Font not ready, attempting to load: ${fontStr}`);
+            await document.fonts.load(fontStr);
+          }
+        } catch (e) {
+          console.warn(`Failed to verify/load font for canvas: ${fontStr}`, e);
+        }
+
+        ctx.font = fontStr;
         ctx.textAlign = layer.textAlign || "center";
         ctx.textBaseline = "middle";
         
@@ -736,7 +750,7 @@ export default function App() {
           ctx.stroke();
         }
         ctx.restore();
-      });
+      }
     };
   };
 
@@ -1210,7 +1224,7 @@ export default function App() {
                                 <span className="text-slate-400 font-bold text-lg" style={{ fontFamily: f.name }}>Aa</span>
                               </div>
                               <div>
-                                <p className="text-sm font-bold text-white">{f.name}</p>
+                                <p className="text-sm font-bold text-white">{f.name.split('-').slice(1).join('-') || f.name}</p>
                                 <p className="text-[10px] text-slate-500 uppercase tracking-widest">
                                   {isSelected ? `Selected (Position: ${selectedIndex + 1})` : 'Not Selected'}
                                 </p>
@@ -1852,7 +1866,7 @@ export default function App() {
                             }}
                           >
                             <div className="flex items-center justify-between mb-1">
-                              <span className="font-sans text-xs text-slate-400 block uppercase tracking-tighter">{f.name}</span>
+                              <span className="font-sans text-xs text-slate-400 block uppercase tracking-tighter">{f.name.split('-').slice(1).join('-') || f.name}</span>
                             </div>
                             <span style={{ fontFamily: f.name }} className="text-lg">
                               Preview
