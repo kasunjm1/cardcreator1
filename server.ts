@@ -42,6 +42,10 @@ const pool = new Pool({
   }
 });
 
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle database client', err);
+});
+
 if (!process.env.DATABASE_URL) {
   console.warn("WARNING: DATABASE_URL is not set. Database operations will fail.");
 } else {
@@ -128,10 +132,6 @@ async function startServer() {
 
   app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-    console.log('Headers:', JSON.stringify(req.headers));
-    if (req.method === 'POST' || req.method === 'PUT') {
-      console.log('Body:', JSON.stringify(req.body));
-    }
     next();
   });
   
