@@ -15,9 +15,13 @@ const IS_VERCEL = process.env.VERCEL === "1";
 const STORAGE_BASE = IS_VERCEL ? "/tmp" : process.cwd();
 
 const DATA_FILE = path.join(STORAGE_BASE, "data.json");
-const PROJECT_FONTS_DIR = path.join(process.cwd(), "font");
+const PROJECT_FONTS_DIR = fs.existsSync(path.join(__dirname, "font")) 
+  ? path.join(__dirname, "font") 
+  : path.join(process.cwd(), "font");
 const WRITABLE_FONTS_DIR = path.join(STORAGE_BASE, "public", "fonts");
 const UPLOADS_DIR = path.join(STORAGE_BASE, "public", "uploads");
+
+console.log(`Fonts directory: ${PROJECT_FONTS_DIR} (exists: ${fs.existsSync(PROJECT_FONTS_DIR)})`);
 
 // Database setup
 if (process.env.DATABASE_URL) {
@@ -417,6 +421,7 @@ app.get("/api/fonts", (req, res) => {
     const projectFiles = fs.existsSync(PROJECT_FONTS_DIR) ? fs.readdirSync(PROJECT_FONTS_DIR) : [];
     const writableFiles = fs.existsSync(WRITABLE_FONTS_DIR) ? fs.readdirSync(WRITABLE_FONTS_DIR) : [];
     const allFiles = Array.from(new Set([...projectFiles, ...writableFiles]));
+    console.log(`Found ${projectFiles.length} project fonts and ${writableFiles.length} writable fonts. Total unique: ${allFiles.length}`);
     res.json(allFiles.map(f => ({ name: f, url: `/fonts/${f}` })));
   } catch (err) {
     console.error("Fetch fonts error:", err);

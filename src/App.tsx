@@ -123,8 +123,10 @@ export default function App() {
 
   const fetchFonts = async () => {
     try {
+      console.log("Fetching fonts from API...");
       const res = await fetch("/api/fonts");
       const data = await res.json();
+      console.log(`API returned ${data.length} fonts:`, data);
       
       const loadedFonts = await Promise.all(data.map(async (font: Font) => {
         // Clean font name: remove timestamp prefix and extension
@@ -132,10 +134,12 @@ export default function App() {
         const nameWithExt = parts.length > 1 ? parts.slice(1).join('-') : font.name;
         const fontFamily = nameWithExt.split('.').slice(0, -1).join('.');
         
+        console.log(`Loading font: ${fontFamily} from ${font.url}`);
         const fontFace = new FontFace(fontFamily, `url("${encodeURI(font.url)}")`);
         try {
           const loadedFace = await fontFace.load();
           document.fonts.add(loadedFace);
+          console.log(`Successfully loaded font: ${fontFamily}`);
           return { name: fontFamily, url: font.url };
         } catch (e) {
           console.error(`Failed to load font: ${font.name}`, e);
@@ -143,7 +147,9 @@ export default function App() {
         }
       }));
       
-      setFonts(loadedFonts.filter(f => f !== null) as Font[]);
+      const filteredFonts = loadedFonts.filter(f => f !== null) as Font[];
+      console.log(`Successfully loaded ${filteredFonts.length} fonts into browser.`);
+      setFonts(filteredFonts);
     } catch (err) {
       console.error("Failed to fetch fonts", err);
     }
@@ -398,70 +404,61 @@ export default function App() {
     setLoading(true); // Show loading state during upload
     try {
       for (const file of acceptedFiles) {
-        console.log(`Starting upload for: ${file.name} (${file.size} bytes)`);
-        const formData = new FormData();
-        formData.append("image", file);
-
-        const res = await fetch("/api/upload-image", {
-          method: "POST",
-          body: formData,
+        console.log(`Processing image: ${file.name} (${file.size} bytes)`);
+        
+        // Convert to base64
+        const reader = new FileReader();
+        const base64Promise = new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = (e) => reject(e);
+          reader.readAsDataURL(file);
         });
         
-        if (!res.ok) {
-          const errorText = await res.text();
-          throw new Error(`Upload failed for ${file.name}: ${res.status} ${errorText}`);
+        const base64 = await base64Promise;
+        const projectId = Math.random().toString(36).substr(2, 9);
+        const fileName = file.name.split('.').slice(0, -1).join('.') || file.name;
+        
+        const project: ImageProject = {
+          id: projectId,
+          username: user.username,
+          imageUrl: base64,
+          layers: [],
+          name: fileName,
+          createdAt: new Date().toISOString(),
+        };
+
+        console.log(`Saving project with base64 image for ${file.name}...`);
+        const saveRes = await fetch("/api/images", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(project),
+        });
+        
+        if (!saveRes.ok) {
+          console.error(`Failed to save project for ${file.name}`);
+          throw new Error(`Failed to save project for ${file.name}`);
+        } else {
+          console.log(`Project saved successfully for ${file.name}`);
         }
         
-        const data = await res.json();
-        
-        if (data.success) {
-          console.log(`Upload successful for ${file.name}, URL: ${data.url}`);
-          const projectId = Math.random().toString(36).substr(2, 9);
-          const fileName = file.name.split('.').slice(0, -1).join('.') || file.name;
-          
-          const project: ImageProject = {
-            id: projectId,
-            username: user.username,
-            imageUrl: data.url,
-            layers: [],
-            name: fileName,
-            createdAt: new Date().toISOString(),
-          };
-
-          console.log(`Saving project metadata for ${file.name}...`);
-          const saveRes = await fetch("/api/images", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(project),
-          });
-          
-          if (!saveRes.ok) {
-            console.error(`Failed to save project metadata for ${file.name}`);
-          } else {
-            console.log(`Project metadata saved for ${file.name}`);
-          }
-          
-          // If it's the last one, load it
-          if (file === acceptedFiles[acceptedFiles.length - 1]) {
-            console.log(`Loading last uploaded image: ${file.name}`);
-            setImage(data.url);
-            setLayers([]);
-            setCurrentProjectId(projectId);
-            setSelectedLayerId(null);
-            // We update projects state locally to avoid the race condition with auto-save
-            setProjects(prev => [project, ...prev]);
-          }
-        } else {
-          throw new Error(`Upload failed for ${file.name}: ${data.message || 'Unknown error'}`);
+        // If it's the last one, load it
+        if (file === acceptedFiles[acceptedFiles.length - 1]) {
+          console.log(`Loading last uploaded image: ${file.name}`);
+          setImage(base64);
+          setLayers([]);
+          setCurrentProjectId(projectId);
+          setSelectedLayerId(null);
+          // We update projects state locally to avoid the race condition with auto-save
+          setProjects(prev => [project, ...prev]);
         }
       }
     } catch (err) {
       console.error("Critical upload error:", err);
-      alert(err instanceof Error ? err.message : "An error occurred during upload.");
+      alert(err instanceof Error ? err.message : "An error occurred during processing.");
     } finally {
       setLoading(false);
-      await fetchProjects();
     }
+    await fetchProjects();
   };
 
   const { getRootProps: getSidebarRootProps, getInputProps: getSidebarInputProps, isDragActive: isSidebarDragActive } = useDropzone({
