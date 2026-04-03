@@ -7,6 +7,9 @@ import pg from "pg";
 const { Pool } = pg;
 const app = express();
 
+// Force bypass for self-signed certificates globally
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 // Use /tmp for writable storage on Vercel (fallback if DB not used)
 const IS_VERCEL = process.env.VERCEL === "1";
 const STORAGE_BASE = IS_VERCEL ? "/tmp" : process.cwd();
@@ -16,11 +19,18 @@ const FONTS_DIR = path.join(STORAGE_BASE, "public", "fonts");
 const UPLOADS_DIR = path.join(STORAGE_BASE, "public", "uploads");
 
 // Database setup
+if (process.env.DATABASE_URL) {
+  const sanitizedUrl = process.env.DATABASE_URL.replace(/:[^:@/]+@/, ':****@');
+  console.log(`Database URL found: ${sanitizedUrl}`);
+} else {
+  console.log("No DATABASE_URL found in environment");
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? {
+  connectionString: process.env.DATABASE_URL?.split('?')[0],
+  ssl: {
     rejectUnauthorized: false
-  } : undefined
+  }
 });
 
 let isDbInitialized = false;

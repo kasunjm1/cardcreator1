@@ -25,8 +25,16 @@ const UPLOADS_DIR = path.join(__dirname, "public", "uploads");
   }
 });
 
+// Database setup
+if (process.env.DATABASE_URL) {
+  const sanitizedUrl = process.env.DATABASE_URL.replace(/:[^:@/]+@/, ':****@');
+  console.log(`Database URL found: ${sanitizedUrl}`);
+} else {
+  console.log("No DATABASE_URL found in environment");
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL?.split('?')[0],
   ssl: {
     rejectUnauthorized: false
   }
