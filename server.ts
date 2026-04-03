@@ -125,8 +125,21 @@ async function startServer() {
   });
   
   // Health check
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", time: new Date().toISOString() });
+  app.get("/api/health", async (req, res) => {
+    let dbStatus = "not_configured";
+    if (process.env.DATABASE_URL) {
+      try {
+        await pool.query("SELECT 1");
+        dbStatus = "connected";
+      } catch (err) {
+        dbStatus = "error: " + (err instanceof Error ? err.message : String(err));
+      }
+    }
+    res.json({ 
+      status: "ok", 
+      time: new Date().toISOString(),
+      database: dbStatus
+    });
   });
 
   app.use("/fonts", express.static(FONTS_DIR));
@@ -136,6 +149,7 @@ async function startServer() {
   app.post("/api/login", async (req, res) => {
     try {
       const { username, password } = req.body;
+      console.log(`Login attempt for user: ${username}`);
       const result = await pool.query(
         "SELECT username, role, selected_fonts as \"selectedFonts\" FROM users WHERE username = $1 AND password = $2",
         [username, password]
@@ -143,6 +157,7 @@ async function startServer() {
       
       if (result.rowCount && result.rowCount > 0) {
         const user = result.rows[0];
+        console.log(`Login successful for user: ${username}`);
         res.json({ 
           success: true, 
           username: user.username, 
@@ -150,6 +165,7 @@ async function startServer() {
           selectedFonts: user.selectedFonts || []
         });
       } else {
+        console.log(`Login failed for user: ${username} - Invalid credentials`);
         res.status(401).json({ success: false, message: "Invalid credentials" });
       }
     } catch (err) {

@@ -2,16 +2,26 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import multer from "multer";
+import pg from "pg";
 
+const { Pool } = pg;
 const app = express();
 
-// Use /tmp for writable storage on Vercel
+// Use /tmp for writable storage on Vercel (fallback if DB not used)
 const IS_VERCEL = process.env.VERCEL === "1";
 const STORAGE_BASE = IS_VERCEL ? "/tmp" : process.cwd();
 
 const DATA_FILE = path.join(STORAGE_BASE, "data.json");
 const FONTS_DIR = path.join(STORAGE_BASE, "public", "fonts");
 const UPLOADS_DIR = path.join(STORAGE_BASE, "public", "uploads");
+
+// Database setup
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? {
+    rejectUnauthorized: false
+  } : false
+});
 
 // Ensure directories exist
 [FONTS_DIR, UPLOADS_DIR].forEach(dir => {
@@ -20,22 +30,67 @@ const UPLOADS_DIR = path.join(STORAGE_BASE, "public", "uploads");
   }
 });
 
-// Initialize data file if not exists
+// Initialize database tables if using DB
+async function initDb() {
+  if (!process.env.DATABASE_URL) return;
+  
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        password TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        selected_fonts TEXT[] DEFAULT '{}'
+      );
+    `);
+    
+    await client.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_fonts TEXT[] DEFAULT '{}';
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS font_app_images (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        image_url TEXT NOT NULL,
+        layers JSONB NOT NULL,
+        name TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await client.query(`
+      ALTER TABLE font_app_images ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+    `);
+    
+    const adminCheck = await client.query("SELECT * FROM users WHERE username = 'admin'");
+    if (adminCheck.rowCount === 0) {
+      await client.query("INSERT INTO users (username, password, role) VALUES ('admin', 'admin@1234', 'admin')");
+    }
+  } catch (err) {
+    console.error("Database initialization error:", err);
+  } finally {
+    if (client) client.release();
+  }
+}
+
+// Initialize data file if not exists (fallback)
 if (!fs.existsSync(DATA_FILE)) {
   const INITIAL_DATA_FILE = path.join(process.cwd(), "data.json");
   if (fs.existsSync(INITIAL_DATA_FILE)) {
     try {
       fs.copyFileSync(INITIAL_DATA_FILE, DATA_FILE);
     } catch (e) {
-      console.error("Failed to copy initial data, creating default", e);
       fs.writeFileSync(DATA_FILE, JSON.stringify({
-        users: [{ username: "admin", password: "1234", role: "admin" }],
+        users: [{ username: "admin", password: "admin@1234", role: "admin" }],
         images: []
       }, null, 2));
     }
   } else {
     fs.writeFileSync(DATA_FILE, JSON.stringify({
-      users: [{ username: "admin", password: "1234", role: "admin" }],
+      users: [{ username: "admin", password: "admin@1234", role: "admin" }],
       images: []
     }, null, 2));
   }
@@ -57,36 +112,78 @@ const upload = multer({ storage });
 app.use(express.json());
 
 // Health check
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", time: new Date().toISOString(), environment: IS_VERCEL ? "vercel" : "local" });
+app.get("/api/health", async (req, res) => {
+  let dbStatus = "not_configured";
+  if (process.env.DATABASE_URL) {
+    try {
+      await pool.query("SELECT 1");
+      dbStatus = "connected";
+    } catch (err) {
+      dbStatus = "error: " + (err instanceof Error ? err.message : String(err));
+    }
+  }
+  res.json({ 
+    status: "ok", 
+    time: new Date().toISOString(), 
+    environment: IS_VERCEL ? "vercel" : "local",
+    database: dbStatus
+  });
 });
 
 app.use("/fonts", express.static(FONTS_DIR));
 app.use("/uploads", express.static(UPLOADS_DIR));
 
 // Auth
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
-    const user = data.users.find((u: any) => u.username === username && u.password === password);
-    if (user) {
-      res.json({ 
-        success: true, 
-        username: user.username, 
-        role: user.role || (user.username === 'admin' ? 'admin' : 'user'),
-        selectedFonts: user.selectedFonts || []
-      });
+    console.log(`Login attempt for user: ${username}`);
+    
+    if (process.env.DATABASE_URL) {
+      console.log("Using database for login");
+      await initDb();
+      const result = await pool.query(
+        "SELECT username, role, selected_fonts as \"selectedFonts\" FROM users WHERE username = $1 AND password = $2",
+        [username, password]
+      );
+      
+      if (result.rowCount && result.rowCount > 0) {
+        const user = result.rows[0];
+        console.log(`Login successful for user: ${username}`);
+        return res.json({ 
+          success: true, 
+          username: user.username, 
+          role: user.role,
+          selectedFonts: user.selectedFonts || []
+        });
+      } else {
+        console.log(`Login failed for user: ${username} - Invalid credentials`);
+      }
     } else {
-      res.status(401).json({ success: false, message: "Invalid credentials" });
+      console.log("Using data.json for login");
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+      const user = data.users.find((u: any) => u.username === username && u.password === password);
+      if (user) {
+        console.log(`Login successful for user: ${username} (data.json)`);
+        return res.json({ 
+          success: true, 
+          username: user.username, 
+          role: user.role || (user.username === 'admin' ? 'admin' : 'user'),
+          selectedFonts: user.selectedFonts || []
+        });
+      } else {
+        console.log(`Login failed for user: ${username} (data.json) - Invalid credentials`);
+      }
     }
+    
+    res.status(401).json({ success: false, message: "Invalid credentials" });
   } catch (err) {
     console.error("Login error:", err);
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
-app.post("/api/v1/update", (req, res) => {
+app.post("/api/v1/update", async (req, res) => {
   try {
     const authHeader = req.headers['x-sync-auth'];
     if (!authHeader || typeof authHeader !== 'string') {
@@ -96,48 +193,109 @@ app.post("/api/v1/update", (req, res) => {
     const op = Buffer.from(authHeader, 'base64').toString('utf-8');
     const { a, id, c, t } = req.body;
     
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
-    const admin = data.users.find((u: any) => u.username === op);
-    
-    if (!admin || admin.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Unauthorized" });
-    }
-
-    if (a === 'l') { // list
-      const users = data.users.map((u: any) => ({ 
-        username: u.username, 
-        role: u.role || (u.username === 'admin' ? 'admin' : 'user') 
-      }));
-      return res.json({ success: true, users });
-    }
-
-    if (a === 'c') { // create
-      if (data.users.find((u: any) => u.username === id)) {
-        return res.status(400).json({ success: false, message: "User already exists" });
+    if (process.env.DATABASE_URL) {
+      await initDb();
+      const adminResult = await pool.query("SELECT * FROM users WHERE username = $1", [op]);
+      const admin = adminResult.rows[0];
+      
+      if (!admin || admin.role !== "admin") {
+        return res.status(403).json({ success: false, message: "Unauthorized" });
       }
-      data.users.push({ username: id, password: c, role: t || "user" });
-      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-      return res.json({ success: true });
-    }
 
-    if (a === 'u') { // update
-      const userIndex = data.users.findIndex((u: any) => u.username === id);
-      if (userIndex === -1) {
-        return res.status(404).json({ success: false, message: "User not found" });
+      if (a === 'l') { // list
+        const usersResult = await pool.query("SELECT username, role FROM users");
+        return res.json({ success: true, users: usersResult.rows });
       }
-      if (c) data.users[userIndex].password = c;
-      if (t) data.users[userIndex].role = t;
-      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-      return res.json({ success: true });
-    }
 
-    if (a === 'd') { // delete
-      if (id === "admin") {
-        return res.status(400).json({ success: false, message: "Cannot delete default admin" });
+      if (a === 'c') { // create
+        const checkResult = await pool.query("SELECT * FROM users WHERE username = $1", [id]);
+        if (checkResult.rowCount && checkResult.rowCount > 0) {
+          return res.status(400).json({ success: false, message: "User already exists" });
+        }
+        await pool.query(
+          "INSERT INTO users (username, password, role) VALUES ($1, $2, $3)",
+          [id, c, t || "user"]
+        );
+        return res.json({ success: true });
       }
-      data.users = data.users.filter((u: any) => u.username !== id);
-      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-      return res.json({ success: true });
+
+      if (a === 'u') { // update
+        const updateFields = [];
+        const values = [];
+        let paramIndex = 1;
+
+        if (c) {
+          updateFields.push(`password = $${paramIndex++}`);
+          values.push(c);
+        }
+        if (t) {
+          updateFields.push(`role = $${paramIndex++}`);
+          values.push(t);
+        }
+
+        if (updateFields.length === 0) {
+          return res.status(400).json({ success: false, message: "No fields to update" });
+        }
+
+        values.push(id);
+        await pool.query(
+          `UPDATE users SET ${updateFields.join(", ")} WHERE username = $${paramIndex}`,
+          values
+        );
+        return res.json({ success: true });
+      }
+
+      if (a === 'd') { // delete
+        if (id === "admin") {
+          return res.status(400).json({ success: false, message: "Cannot delete default admin" });
+        }
+        await pool.query("DELETE FROM users WHERE username = $1", [id]);
+        return res.json({ success: true });
+      }
+    } else {
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+      const admin = data.users.find((u: any) => u.username === op);
+      
+      if (!admin || admin.role !== "admin") {
+        return res.status(403).json({ success: false, message: "Unauthorized" });
+      }
+
+      if (a === 'l') { // list
+        const users = data.users.map((u: any) => ({ 
+          username: u.username, 
+          role: u.role || (u.username === 'admin' ? 'admin' : 'user') 
+        }));
+        return res.json({ success: true, users });
+      }
+
+      if (a === 'c') { // create
+        if (data.users.find((u: any) => u.username === id)) {
+          return res.status(400).json({ success: false, message: "User already exists" });
+        }
+        data.users.push({ username: id, password: c, role: t || "user" });
+        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+        return res.json({ success: true });
+      }
+
+      if (a === 'u') { // update
+        const userIndex = data.users.findIndex((u: any) => u.username === id);
+        if (userIndex === -1) {
+          return res.status(404).json({ success: false, message: "User not found" });
+        }
+        if (c) data.users[userIndex].password = c;
+        if (t) data.users[userIndex].role = t;
+        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+        return res.json({ success: true });
+      }
+
+      if (a === 'd') { // delete
+        if (id === "admin") {
+          return res.status(400).json({ success: false, message: "Cannot delete default admin" });
+        }
+        data.users = data.users.filter((u: any) => u.username !== id);
+        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+        return res.json({ success: true });
+      }
     }
 
     res.status(400).json({ success: false, message: "Invalid action" });
@@ -147,18 +305,31 @@ app.post("/api/v1/update", (req, res) => {
   }
 });
 
-app.post("/api/change-password", (req, res) => {
+app.post("/api/change-password", async (req, res) => {
   try {
     const { username, oldPassword, newPassword } = req.body;
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
-    const userIndex = data.users.findIndex((u: any) => u.username === username && u.password === oldPassword);
     
-    if (userIndex === -1) {
-      return res.status(401).json({ success: false, message: "Invalid old password" });
-    }
+    if (process.env.DATABASE_URL) {
+      await initDb();
+      const result = await pool.query(
+        "UPDATE users SET password = $1 WHERE username = $2 AND password = $3",
+        [newPassword, username, oldPassword]
+      );
+      
+      if (result.rowCount === 0) {
+        return res.status(401).json({ success: false, message: "Invalid old password" });
+      }
+    } else {
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+      const userIndex = data.users.findIndex((u: any) => u.username === username && u.password === oldPassword);
+      
+      if (userIndex === -1) {
+        return res.status(401).json({ success: false, message: "Invalid old password" });
+      }
 
-    data.users[userIndex].password = newPassword;
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+      data.users[userIndex].password = newPassword;
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    }
     res.json({ success: true });
   } catch (err) {
     console.error("Change password error:", err);
@@ -166,18 +337,31 @@ app.post("/api/change-password", (req, res) => {
   }
 });
 
-app.post("/api/user/preferences", (req, res) => {
+app.post("/api/user/preferences", async (req, res) => {
   try {
     const { username, selectedFonts } = req.body;
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
-    const userIndex = data.users.findIndex((u: any) => u.username === username);
     
-    if (userIndex === -1) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
+    if (process.env.DATABASE_URL) {
+      await initDb();
+      const result = await pool.query(
+        "UPDATE users SET selected_fonts = $1 WHERE username = $2",
+        [selectedFonts, username]
+      );
+      
+      if (result.rowCount === 0) {
+        return res.status(404).json({ success: false, message: "User not found" });
+      }
+    } else {
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+      const userIndex = data.users.findIndex((u: any) => u.username === username);
+      
+      if (userIndex === -1) {
+        return res.status(404).json({ success: false, message: "User not found" });
+      }
 
-    data.users[userIndex].selectedFonts = selectedFonts;
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+      data.users[userIndex].selectedFonts = selectedFonts;
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    }
     res.json({ success: true });
   } catch (err) {
     console.error("Update preferences error:", err);
@@ -255,33 +439,61 @@ app.post("/api/fonts/rename", (req, res) => {
 });
 
 // Images Metadata
-app.get("/api/images", (req, res) => {
+app.get("/api/images", async (req, res) => {
   try {
     const { username } = req.query;
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
-    const userImages = username 
-      ? data.images.filter((img: any) => img.username === username)
-      : data.images;
-    res.json(userImages);
+    
+    if (process.env.DATABASE_URL) {
+      await initDb();
+      let query = "SELECT id, username, image_url as \"imageUrl\", layers, name, created_at as \"createdAt\" FROM font_app_images";
+      const params = [];
+      
+      if (username) {
+        query += " WHERE username = $1";
+        params.push(username);
+      }
+      
+      const result = await pool.query(query, params);
+      return res.json(result.rows);
+    } else {
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+      const userImages = username 
+        ? data.images.filter((img: any) => img.username === username)
+        : data.images;
+      res.json(userImages);
+    }
   } catch (err) {
     console.error("Fetch images error:", err);
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
-app.post("/api/images", (req, res) => {
+app.post("/api/images", async (req, res) => {
   try {
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
     const project = req.body; 
     
-    const index = data.images.findIndex((img: any) => img.id === project.id);
-    if (index !== -1) {
-      data.images[index] = project;
+    if (process.env.DATABASE_URL) {
+      await initDb();
+      await pool.query(
+        `INSERT INTO font_app_images (id, username, image_url, layers, name)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE SET
+         username = EXCLUDED.username,
+         image_url = EXCLUDED.image_url,
+         layers = EXCLUDED.layers,
+         name = EXCLUDED.name`,
+        [project.id, project.username, project.imageUrl, JSON.stringify(project.layers), project.name]
+      );
     } else {
-      data.images.push(project);
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+      const index = data.images.findIndex((img: any) => img.id === project.id);
+      if (index !== -1) {
+        data.images[index] = project;
+      } else {
+        data.images.push(project);
+      }
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
     }
-    
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
     res.json({ success: true });
   } catch (err) {
     console.error("Save image error:", err);
@@ -289,12 +501,18 @@ app.post("/api/images", (req, res) => {
   }
 });
 
-app.delete("/api/images/:id", (req, res) => {
+app.delete("/api/images/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
-    data.images = data.images.filter((img: any) => img.id !== id);
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    
+    if (process.env.DATABASE_URL) {
+      await initDb();
+      await pool.query("DELETE FROM font_app_images WHERE id = $1", [id]);
+    } else {
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+      data.images = data.images.filter((img: any) => img.id !== id);
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    }
     res.json({ success: true });
   } catch (err) {
     console.error("Delete image error:", err);
