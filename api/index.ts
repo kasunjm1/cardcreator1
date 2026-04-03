@@ -20,9 +20,18 @@ const IS_VERCEL = process.env.VERCEL === "1";
 const STORAGE_BASE = IS_VERCEL ? "/tmp" : process.cwd();
 
 const DATA_FILE = path.join(STORAGE_BASE, "data.json");
-const PROJECT_FONTS_DIR = fs.existsSync(path.join(__dirname, "font")) 
-  ? path.join(__dirname, "font") 
-  : path.join(process.cwd(), "font");
+console.log(`__dirname: ${__dirname}`);
+console.log(`process.cwd(): ${process.cwd()}`);
+const PROJECT_FONTS_DIR = fs.existsSync(path.join(process.cwd(), "public", "fonts")) 
+  ? path.join(process.cwd(), "public", "fonts") 
+  : path.join(__dirname, "font");
+
+if (fs.existsSync(PROJECT_FONTS_DIR)) {
+  console.log(`Files in PROJECT_FONTS_DIR: ${fs.readdirSync(PROJECT_FONTS_DIR).join(", ")}`);
+} else {
+  console.log(`PROJECT_FONTS_DIR does not exist: ${PROJECT_FONTS_DIR}`);
+}
+
 const WRITABLE_FONTS_DIR = path.join(STORAGE_BASE, "public", "fonts");
 const UPLOADS_DIR = path.join(STORAGE_BASE, "public", "uploads");
 
@@ -178,6 +187,21 @@ app.get("/api/health", async (req, res) => {
 app.use("/fonts", express.static(PROJECT_FONTS_DIR));
 app.use("/fonts", express.static(WRITABLE_FONTS_DIR));
 app.use("/uploads", express.static(UPLOADS_DIR));
+
+// Explicit font serving route for Vercel
+app.get("/fonts/:name", (req, res) => {
+  const { name } = req.params;
+  const projectPath = path.join(PROJECT_FONTS_DIR, name);
+  const writablePath = path.join(WRITABLE_FONTS_DIR, name);
+  
+  if (fs.existsSync(projectPath)) {
+    return res.sendFile(projectPath);
+  }
+  if (fs.existsSync(writablePath)) {
+    return res.sendFile(writablePath);
+  }
+  res.status(404).send("Font not found");
+});
 
 // Auth
 app.post("/api/login", async (req, res) => {

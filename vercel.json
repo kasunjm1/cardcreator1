@@ -2,9 +2,9 @@
   "version": 2,
   "routes": [
     { "src": "/api/(.*)", "dest": "/api" },
-    { "src": "/fonts/(.*)", "dest": "/api" },
     { "src": "/uploads/(.*)", "dest": "/api" },
     { "handle": "filesystem" },
+    { "src": "/fonts/(.*)", "dest": "/api" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
 }

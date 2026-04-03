@@ -15,9 +15,11 @@ const { Pool } = pg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const FONTS_DIR = fs.existsSync(path.join(process.cwd(), "api", "font"))
-  ? path.join(process.cwd(), "api", "font")
-  : path.join(process.cwd(), "font");
+const FONTS_DIR = fs.existsSync(path.join(process.cwd(), "public", "fonts"))
+  ? path.join(process.cwd(), "public", "fonts")
+  : fs.existsSync(path.join(process.cwd(), "api", "font"))
+    ? path.join(process.cwd(), "api", "font")
+    : path.join(process.cwd(), "font");
 const UPLOADS_DIR = path.join(__dirname, "public", "uploads");
 
 // Ensure directories exist
